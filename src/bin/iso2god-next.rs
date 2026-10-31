@@ -10,6 +10,7 @@ use iso2god_next::convert::{
     self, ConversionProgress, ConvertOptions, SourceKind, Stage, TrimMode,
 };
 use iso2god_next::god::ContentType;
+use iso2god_next::icon::{self, Origin};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -28,6 +29,20 @@ struct Cli {
     /// Set game title
     #[arg(long, value_name = "TITLE")]
     game_title: Option<String>,
+
+    /// Use this picture (PNG or JPEG) as the game's icon instead of the one in
+    /// the game; it is cropped to a square and scaled to 64x64
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["fetch_icon", "no_icon"])]
+    icon: Option<PathBuf>,
+
+    /// If the game's own icon cannot be read, download it from Xbox Live (needs
+    /// an internet connection)
+    #[arg(long, conflicts_with = "no_icon")]
+    fetch_icon: bool,
+
+    /// Leave the icon out of the package
+    #[arg(long)]
+    no_icon: bool,
 
     /// Whether to trim off unused space from the ISO image (folders have none);
     /// passing no --trim flag at all is equivalent to "from-end"
@@ -120,12 +135,47 @@ fn main() -> Result<(), Error> {
         return Ok(());
     }
 
+    let icon = if let Some(path) = &args.icon {
+        // Asked for by name, so a picture that cannot be used is an error.
+        Some(icon::from_file(path)?)
+    } else if args.no_icon {
+        None
+    } else {
+        // The icon is a nicety: whatever goes wrong, the conversion goes on.
+        match icon::find(&args.source, info.title_id, args.fetch_icon) {
+            Ok(Some((icon, Origin::Game))) => {
+                println!("using the icon from the game");
+                Some(icon)
+            }
+            Ok(Some((icon, Origin::Download))) => {
+                println!("using the icon downloaded from Xbox Live");
+                Some(icon)
+            }
+            Ok(None) => {
+                eprintln!(
+                    "warning: no icon is available for this game{}",
+                    if args.fetch_icon {
+                        ""
+                    } else {
+                        " (--fetch-icon also tries Xbox Live)"
+                    }
+                );
+                None
+            }
+            Err(error) => {
+                eprintln!("warning: {error:#}; continuing without an icon");
+                None
+            }
+        }
+    };
+
     println!("clearing data directory");
 
     let options = ConvertOptions {
         source: args.source,
         dest_dir: args.dest_dir,
         game_title: args.game_title,
+        icon,
         trim,
         num_threads: args.num_threads,
     };

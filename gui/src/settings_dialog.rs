@@ -17,6 +17,7 @@ const TEST_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// The editable rows; cheap to clone because GTK widgets are reference counted.
 #[derive(Clone)]
 struct Rows {
+    fetch_icons: adw::SwitchRow,
     enable: adw::SwitchRow,
     host: adw::EntryRow,
     username: adw::EntryRow,
@@ -27,6 +28,7 @@ struct Rows {
 impl Rows {
     fn read(&self) -> FtpSettings {
         FtpSettings {
+            fetch_icons: self.fetch_icons.is_active(),
             enabled: self.enable.is_active(),
             host: self.host.text().trim().to_owned(),
             username: self.username.text().trim().to_owned(),
@@ -52,7 +54,20 @@ pub fn present(
         .description("After converting an ISO image, upload it to the console over FTP.")
         .build();
 
+    let icon_group = adw::PreferencesGroup::builder()
+        .title("Game icons")
+        .description("The picture the console shows for a converted game.")
+        .build();
+
     let rows = Rows {
+        fetch_icons: adw::SwitchRow::builder()
+            .title("Download missing icons")
+            .subtitle(
+                "Games carry their own icon. If it cannot be read, get it from Xbox Live \
+                 instead. The picture button on a game lets you choose your own.",
+            )
+            .active(current.fetch_icons)
+            .build(),
         enable: adw::SwitchRow::builder()
             .title("Enable FTP upload")
             .subtitle("Send each converted game to the console after conversion")
@@ -98,6 +113,8 @@ pub fn present(
     ftp_group.add(&rows.password);
     ftp_group.add(&rows.remote_dir);
     ftp_group.add(&test_row);
+    icon_group.add(&rows.fetch_icons);
+    page.add(&icon_group);
     page.add(&ftp_group);
     dialog.add(&page);
 

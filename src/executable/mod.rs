@@ -6,6 +6,7 @@ use byteorder::{BE, LE, ReadBytesExt};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
+pub mod title_icon;
 pub mod xbe;
 pub mod xex;
 

@@ -14,6 +14,7 @@
 - **Desktop app** built with GTK4 and libadwaita: add several ISOs or game folders at once (buttons, drag and drop, or command line), see per-game and overall progress, and cancel at any time.
 - **Game folders**: point it at a folder that contains a `default.xex` and it converts the files directly, with no need to rebuild an ISO first.
 - **FTP upload** to the console: after each conversion the finished package is copied to the Xbox 360 (Aurora, Freestyle Dash, XeXMenu and other FTP servers), with its own progress bar, the transfer speed and the time remaining. If the console stalls, the upload reconnects and carries on, resuming the file where the server allows it.
+- **Game icons**: the icon the console shows for a game is read from the game itself (with a download from Xbox Live as a fallback), or you can pick your own picture for any game.
 - **Command line tool** for scripting and batch jobs.
 - **Fast**: part files are written in parallel across worker threads.
 - **Trimming**: unused space at the end of the ISO can be dropped, which usually saves several gigabytes.
@@ -79,7 +80,17 @@ A game folder is the contents of a disc or an extracted ISO: a `default.xex` (Xb
 - File and folder names have to be plain ASCII (at most 255 characters), no two names in a folder may differ only in letter case, and no single file can be 4 GiB or larger. These are limits of the disc format; the app tells you which file is the problem.
 - `.DS_Store`, `Thumbs.db`, `desktop.ini` and `._*` files are left out.
 
-FTP settings are saved to `iso2god-next/ftp.json` in your user configuration folder (`~/.config` on Linux and macOS, `%APPDATA%` on Windows). The password is stored in plain text. On Linux and macOS the file is created readable only by you.
+### Game icons
+
+The icon is stored in the package's header, which is where the console's dashboard looks for it.
+
+- **The game's own icon.** When you add a game, its 64×64 icon is read from the resources in its `default.xex` and shown in front of the game's name. This needs no internet connection. Executables that are stored with LZX compression cannot be read yet, and original Xbox games are not supported.
+- **Downloaded icons.** If the game's own icon cannot be read, it is downloaded from Xbox Live by title ID. Games Xbox Live has no icon for are left without one. Turn this off with **Settings → Game icons → Download missing icons**, for example if you work offline. The icon server only speaks plain HTTP, so the request, which contains the title ID, is not encrypted.
+- **Your own icon.** Click the picture button on a game and choose a PNG or JPEG. It is cropped to a centred square and scaled to 64×64, and it is used instead of the other icons. The undo button next to it goes back to the game's icon.
+
+A package whose game has no icon carries none.
+
+Settings are saved to `iso2god-next/ftp.json` in your user configuration folder (`~/.config` on Linux and macOS, `%APPDATA%` on Windows). The FTP password is stored in plain text. On Linux and macOS the file is created readable only by you.
 
 ### Building the app
 
@@ -132,6 +143,11 @@ Arguments:
 Options:
       --dry-run             Do not convert anything, just print the title info
       --game-title <TITLE>  Set game title
+      --icon <FILE>         Use this picture (PNG or JPEG) as the game's icon instead of the one in
+                            the game; it is cropped to a square and scaled to 64x64
+      --fetch-icon          If the game's own icon cannot be read, download it from Xbox Live (needs
+                            an internet connection)
+      --no-icon             Leave the icon out of the package
       --trim[=<TRIM>]       Whether to trim off unused space from the ISO image (folders have none);
                             passing no --trim flag at all is equivalent to "from-end" [possible values: from-end, none]
   -j, --num-threads <N>     Number of worker threads to use [default: 1]

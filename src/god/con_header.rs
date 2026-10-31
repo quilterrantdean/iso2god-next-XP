@@ -3,6 +3,7 @@ use byteorder::{BE, ByteOrder, LE};
 use sha1::{Digest, Sha1};
 
 use crate::executable::TitleExecutionInfo;
+use crate::icon::MAX_ICON_BYTES;
 
 const EMPTY_LIVE: &[u8] = include_bytes!("empty_live.bin");
 
@@ -97,9 +98,11 @@ impl ConHeaderBuilder {
         self
     }
 
+    /// Stores the icon as both the thumbnail and the title thumbnail. Each has
+    /// room for [`MAX_ICON_BYTES`] bytes.
     pub fn with_game_icon(mut self, png_bytes: Option<&[u8]>) -> Self {
         let png_bytes = png_bytes.unwrap_or(&[]);
-        assert!(png_bytes.len() <= 0x0400);
+        assert!(png_bytes.len() <= MAX_ICON_BYTES);
 
         self.write_u32_be(0x1712, png_bytes.len() as u32);
         self.write_u32_be(0x1716, png_bytes.len() as u32);

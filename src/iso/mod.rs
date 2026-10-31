@@ -1,6 +1,6 @@
 use std::io::{Read, Seek, SeekFrom};
 
-use anyhow::Error;
+use anyhow::{Error, bail};
 
 pub mod directory_table;
 pub mod iso_type;
@@ -35,7 +35,7 @@ impl<R: Read + Seek> IsoReader<R> {
         Ok(&mut self.reader)
     }
 
-    pub fn get_entry(&mut self, path: &WindowsPath) -> Result<Option<&mut R>, Error> {
+    fn find_entry(&self, path: &WindowsPath) -> Option<&DirectoryEntry> {
         let mut entry: Option<&DirectoryEntry> = None;
         let mut dir = Some(&self.directory_table);
 
@@ -44,7 +44,11 @@ impl<R: Read + Seek> IsoReader<R> {
             dir = entry.and_then(|entry| entry.subdirectory.as_ref());
         }
 
-        if let Some(entry) = entry {
+        entry
+    }
+
+    pub fn get_entry(&mut self, path: &WindowsPath) -> Result<Option<&mut R>, Error> {
+        if let Some(entry) = self.find_entry(path) {
             let position = self.volume_descriptor.root_offset
                 + (entry.sector as u64) * self.volume_descriptor.sector_size;
 
@@ -54,6 +58,30 @@ impl<R: Read + Seek> IsoReader<R> {
         } else {
             Ok(None)
         }
+    }
+
+    /// Reads a whole file into memory, refusing files bigger than `max_size`.
+    ///
+    /// Unlike the reader that [`Self::get_entry`] hands out, which runs on
+    /// into whatever follows the file, this stops at the end of the file.
+    pub fn read_entry(
+        &mut self,
+        path: &WindowsPath,
+        max_size: u32,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let Some(size) = self.find_entry(path).map(|entry| entry.size) else {
+            return Ok(None);
+        };
+        if size > max_size {
+            bail!("the file is {size} bytes, more than the {max_size} allowed");
+        }
+
+        let Some(reader) = self.get_entry(path)? else {
+            return Ok(None);
+        };
+        let mut bytes = vec![0_u8; size as usize];
+        reader.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
     }
 
     pub fn get_max_used_prefix_size(&self) -> u64 {

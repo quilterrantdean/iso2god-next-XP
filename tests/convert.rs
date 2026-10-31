@@ -6,9 +6,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use sha1::Digest;
+
 use iso2god_next::convert::{self, ConvertOptions, SourceKind, Stage};
 use iso2god_next::folder::FolderImage;
 use iso2god_next::god::ContentType;
+use iso2god_next::icon;
 use iso2god_next::iso::IsoReader;
 use iso2god_next::{CancelToken, Cancelled};
 
@@ -78,6 +81,120 @@ fn converts_a_synthetic_image_into_the_god_layout() {
         "progress must not go backwards: {fractions:?}"
     );
     assert_eq!(fractions.last().copied(), Some(1.0));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_game_icon_ends_up_in_both_header_thumbnails() {
+    let dir = temp_dir("icon");
+    let iso_path = dir.join("Test Game.iso");
+    fs::write(
+        &iso_path,
+        build_xsf_iso(TITLE_ID, MEDIA_ID, &[0x5a_u8; 0x4000]),
+    )
+    .unwrap();
+
+    let picture = dir.join("cover.jpg");
+    image::RgbImage::from_fn(300, 200, |x, y| {
+        image::Rgb([(x % 256) as u8, (y % 256) as u8, 90])
+    })
+    .save(&picture)
+    .unwrap();
+    let icon = icon::from_file(&picture).unwrap();
+
+    let dest_dir = dir.join("out");
+    let mut options = ConvertOptions::new(&iso_path, &dest_dir);
+    options.icon = Some(icon.clone());
+    convert::convert(&options, |_| {}).unwrap();
+
+    let info = convert::inspect(&iso_path).unwrap();
+    let header = fs::read(info.con_header_file_path(&dest_dir)).unwrap();
+
+    let size = (icon.len() as u32).to_be_bytes();
+    assert_eq!(&header[0x1712..0x1716], &size);
+    assert_eq!(&header[0x1716..0x171a], &size);
+    assert_eq!(&header[0x171a..0x171a + icon.len()], icon.as_slice());
+    assert_eq!(&header[0x571a..0x571a + icon.len()], icon.as_slice());
+
+    // The signature covers the thumbnails, so it must have been computed after
+    // they were written.
+    let digest = sha1::Sha1::digest(&header[0x0344..0x0344 + 0xacbc]);
+    assert_eq!(&header[0x032c..0x0340], digest.as_slice());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_game_whose_executable_carries_no_icon_has_none_to_read() {
+    let dir = temp_dir("no-game-icon");
+    let iso_path = dir.join("Test Game.iso");
+    fs::write(
+        &iso_path,
+        build_xsf_iso(TITLE_ID, MEDIA_ID, &[0x5a_u8; 0x4000]),
+    )
+    .unwrap();
+    let game = build_game_folder(&dir, &[0x5a_u8; 0x1000]);
+
+    assert_eq!(convert::game_icon(&iso_path).unwrap(), None);
+    assert_eq!(convert::game_icon(&game).unwrap(), None);
+    // Without a download to fall back on there is simply no icon.
+    assert!(icon::find(&iso_path, TITLE_ID, false).unwrap().is_none());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_file_is_read_up_to_its_end_and_not_into_the_data_after_it() {
+    let dir = temp_dir("read-entry");
+    let iso_path = dir.join("Test Game.iso");
+    fs::write(
+        &iso_path,
+        build_xsf_iso(TITLE_ID, MEDIA_ID, &[0x5a_u8; 0x4000]),
+    )
+    .unwrap();
+
+    let mut reader = IsoReader::read(fs::File::open(&iso_path).unwrap()).unwrap();
+
+    let xex = reader
+        .read_entry(&"\\default.xex".into(), 1 << 20)
+        .unwrap()
+        .unwrap();
+    assert_eq!(xex.len(), 0x200);
+    assert_eq!(&xex[..4], b"XEX2");
+
+    assert!(
+        reader
+            .read_entry(&"\\missing.bin".into(), 1 << 20)
+            .unwrap()
+            .is_none()
+    );
+    assert!(reader.read_entry(&"\\default.xex".into(), 0x100).is_err());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_unusable_icon_is_refused_before_anything_is_converted() {
+    let dir = temp_dir("bad-icon");
+    let iso_path = dir.join("Test Game.iso");
+    fs::write(
+        &iso_path,
+        build_xsf_iso(TITLE_ID, MEDIA_ID, &[0x5a_u8; 0x4000]),
+    )
+    .unwrap();
+
+    let dest_dir = dir.join("out");
+    let mut options = ConvertOptions::new(&iso_path, &dest_dir);
+    options.icon = Some(b"this is not a png".to_vec());
+
+    let error = convert::convert(&options, |_| {}).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("PNG"),
+        "unexpected error: {error:#}"
+    );
+    assert!(!dest_dir.exists(), "a refused conversion wrote files");
 
     fs::remove_dir_all(&dir).unwrap();
 }

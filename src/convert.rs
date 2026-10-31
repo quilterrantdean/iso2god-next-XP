@@ -16,10 +16,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use anyhow::{Context, Error, bail};
 use rayon::prelude::*;
 
-use crate::executable::{TitleExecutionInfo, TitleInfo};
+use crate::executable::{TitleExecutionInfo, TitleInfo, title_icon};
 use crate::folder::FolderImage;
 use crate::god::{self, ContentType, FileLayout};
-use crate::{game_list, iso};
+use crate::{game_list, icon, iso};
 
 /// Marks an error caused by the user cancelling a conversion.
 ///
@@ -76,6 +76,9 @@ pub struct ConvertOptions {
     pub dest_dir: PathBuf,
     /// Overrides the game title stored in the CON header.
     pub game_title: Option<String>,
+    /// The PNG the console shows for the game, as made by [`crate::icon::fetch`]
+    /// or [`crate::icon::from_file`]. Without one the header carries no icon.
+    pub icon: Option<Vec<u8>>,
     pub trim: TrimMode,
     /// Worker threads used while writing part files.
     pub num_threads: usize,
@@ -87,6 +90,7 @@ impl ConvertOptions {
             source: source.into(),
             dest_dir: dest_dir.into(),
             game_title: None,
+            icon: None,
             trim: TrimMode::default(),
             num_threads: default_num_threads(),
         }
@@ -257,6 +261,50 @@ pub fn inspect_with_trim(source: &Path, trim: TrimMode) -> Result<IsoInfo, Error
     open_volume(source, trim).map(|(info, _)| info)
 }
 
+/// Reads the icon the game itself carries, from the resources of its
+/// `default.xex`, as a PNG that fits the CON header.
+///
+/// `Ok(None)` means there is none to read: the game has no icon, or it is an
+/// original Xbox game. An error means the executable could not be read.
+pub fn game_icon(source: &Path) -> Result<Option<Vec<u8>>, Error> {
+    // Retail executables are a few megabytes; this only guards memory.
+    const MAX_XEX_BYTES: u32 = 64 * 1024 * 1024;
+
+    let xex = if source.is_dir() {
+        let image = FolderImage::scan(source)
+            .with_context(|| format!("cannot read the game files in {}", source.display()))?;
+        let Some(path) = image.root_file("default.xex") else {
+            return Ok(None);
+        };
+
+        let size = fs::metadata(path)
+            .with_context(|| format!("cannot read metadata of {}", path.display()))?
+            .len();
+        if size > MAX_XEX_BYTES as u64 {
+            bail!("{} is too large to be an executable", path.display());
+        }
+        Some(fs::read(path).with_context(|| format!("cannot read {}", path.display()))?)
+    } else {
+        let file =
+            File::open(source).with_context(|| format!("cannot open {}", source.display()))?;
+        let mut reader = iso::IsoReader::read(file)
+            .with_context(|| format!("cannot read {} as an Xbox ISO", source.display()))?;
+        reader
+            .read_entry(&"\\default.xex".into(), MAX_XEX_BYTES)
+            .context("cannot read default.xex")?
+    };
+
+    let Some(xex) = xex else {
+        return Ok(None);
+    };
+    let Some(png) = title_icon::from_xex(&xex).context("cannot read the icon in default.xex")?
+    else {
+        return Ok(None);
+    };
+
+    icon::prepare(&png).map(Some)
+}
+
 fn open_volume(source: &Path, trim: TrimMode) -> Result<(IsoInfo, Volume), Error> {
     if source.is_dir() {
         open_folder(source)
@@ -395,6 +443,11 @@ where
         bail!(Cancelled);
     }
 
+    // Reject a bad icon now rather than after hours of copying.
+    if let Some(icon) = &options.icon {
+        icon::validate(icon)?;
+    }
+
     let (info, volume) = open_volume(&options.source, options.trim)?;
     if info.kind == SourceKind::Folder {
         ensure_dest_outside_source(&options.source, &options.dest_dir)?;
@@ -523,6 +576,9 @@ where
         .or_else(|| info.title_name.clone());
     if let Some(game_title) = game_title {
         con_header = con_header.with_game_title(&game_title);
+    }
+    if let Some(icon) = &options.icon {
+        con_header = con_header.with_game_icon(Some(icon));
     }
 
     let con_header = con_header.finalize();

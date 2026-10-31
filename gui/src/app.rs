@@ -22,7 +22,7 @@ use crate::model::{EntryState, IsoEntry};
 use crate::row::IsoRow;
 use crate::settings::FtpSettings;
 use crate::settings_dialog;
-use crate::task::{self, FileOutcome, Job};
+use crate::task::{self, FileOutcome, IconKind, Job};
 
 #[derive(Debug)]
 pub(crate) enum AppMsg {
@@ -30,6 +30,15 @@ pub(crate) enum AppMsg {
     AddFolderRequested,
     FilesChosen(Vec<PathBuf>),
     Inspected(PathBuf, Result<Box<IsoInfo>, String>),
+    /// Ask for a picture to use as the icon of the game at this index.
+    ChooseIcon(usize),
+    /// A picture was chosen for the game with this path.
+    IconChosen(PathBuf, PathBuf),
+    /// Drop the chosen picture of the game at this index.
+    ClearCustomIcon(usize),
+    /// A worker thread finished with an icon of the game with this path;
+    /// `Ok(None)` means Xbox Live has none.
+    IconLoaded(PathBuf, IconKind, Result<Option<Vec<u8>>, String>),
     Remove(usize),
     Clear,
     ChooseOutput,
@@ -72,6 +81,9 @@ pub(crate) struct AppModel {
     finished: bool,
     last_run_cancelled: bool,
     ftp: FtpSettings,
+    /// Set once a failed icon download was reported, so being offline does not
+    /// raise one toast per game.
+    icon_failure_reported: bool,
     clear_button: Option<gtk::Button>,
     add_action: Option<gio::SimpleAction>,
     add_folder_action: Option<gio::SimpleAction>,
@@ -344,6 +356,7 @@ impl SimpleComponent for AppModel {
             finished: false,
             last_run_cancelled: false,
             ftp: FtpSettings::load(),
+            icon_failure_reported: false,
             clear_button: None,
             add_action: None,
             add_folder_action: None,
@@ -519,10 +532,73 @@ impl SimpleComponent for AppModel {
 
                 match result {
                     Ok(info) => {
+                        let title_id = info.title_id;
                         entry.info = Some(*info);
                         entry.state = EntryState::Ready;
+
+                        entry.icons_loading += 1;
+                        task::find_icon(sender.clone(), path, title_id, self.ftp.fetch_icons);
                     }
                     Err(message) => entry.state = EntryState::Failed(message),
+                }
+            }
+
+            AppMsg::ChooseIcon(index) => {
+                if self.converting {
+                    return;
+                }
+                if let Some(entry) = self.entries.get(index) {
+                    self.open_icon_dialog(&sender, entry.path.clone());
+                }
+            }
+
+            AppMsg::IconChosen(path, picture) => {
+                if let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) {
+                    entry.icons_loading += 1;
+                    task::load_icon(sender.clone(), path, picture);
+                }
+            }
+
+            AppMsg::ClearCustomIcon(index) => {
+                if self.converting {
+                    return;
+                }
+                if let Some(entry) = self.entries.get_mut(index) {
+                    entry.custom_icon = None;
+                    entry.icon_revision += 1;
+                }
+            }
+
+            AppMsg::IconLoaded(path, kind, result) => {
+                let Some(entry) = self.entries.iter_mut().find(|entry| entry.path == path) else {
+                    return;
+                };
+                entry.icons_loading = entry.icons_loading.saturating_sub(1);
+
+                match (kind, result) {
+                    (IconKind::Game, Ok(icon)) => {
+                        entry.game_icon = icon;
+                        entry.icon_revision += 1;
+                    }
+                    (IconKind::Custom, Ok(icon)) => {
+                        entry.custom_icon = icon;
+                        entry.icon_revision += 1;
+                    }
+                    (IconKind::Game, Err(message)) => {
+                        eprintln!(
+                            "iso2god-next-gui: icon of {}: {message}",
+                            entry.path.display()
+                        );
+                        // With downloads off, a game whose icon cannot be read
+                        // is expected and not worth a message.
+                        if self.ftp.fetch_icons && !self.icon_failure_reported {
+                            self.icon_failure_reported = true;
+                            self.toast(&format!("Could not get a game icon: {message}"));
+                        }
+                    }
+                    (IconKind::Custom, Err(message)) => {
+                        self.toast(&format!("Cannot use that picture: {message}"));
+                    }
                 }
             }
 
@@ -574,6 +650,11 @@ impl SimpleComponent for AppModel {
                     return;
                 }
 
+                if self.entries.iter().any(|entry| entry.icons_loading > 0) {
+                    self.toast("Still getting game icons…");
+                    return;
+                }
+
                 if self.ftp.enabled && !self.ftp.is_configured() {
                     self.toast("Enter the Xbox 360 address in Settings.");
                     return;
@@ -586,6 +667,7 @@ impl SimpleComponent for AppModel {
                         entry.info.as_ref().map(|info| Job {
                             path: entry.path.clone(),
                             info: info.clone(),
+                            icon: entry.icon().map(<[u8]>::to_vec),
                         })
                     })
                     .collect();
@@ -739,7 +821,28 @@ impl SimpleComponent for AppModel {
                     eprintln!("iso2god-next-gui: cannot save settings: {error}");
                     self.toast(&format!("Cannot save settings: {error}"));
                 }
+
+                // Switching downloads on also covers the games already listed
+                // that have no icon yet.
+                let download_now = settings.fetch_icons && !self.ftp.fetch_icons;
                 self.ftp = settings;
+
+                if download_now {
+                    self.icon_failure_reported = false;
+                    for entry in &mut self.entries {
+                        if let Some(info) = &entry.info
+                            && entry.game_icon.is_none()
+                        {
+                            entry.icons_loading += 1;
+                            task::find_icon(
+                                sender.clone(),
+                                entry.path.clone(),
+                                info.title_id,
+                                true,
+                            );
+                        }
+                    }
+                }
             }
 
             AppMsg::About => self.show_about_dialog(),
@@ -764,6 +867,7 @@ impl AppModel {
                 .entries
                 .iter()
                 .any(|entry| matches!(entry.state, EntryState::Inspecting))
+            && self.entries.iter().all(|entry| entry.icons_loading == 0)
             && self.entries.iter().any(|entry| entry.info.is_some())
     }
 
@@ -1024,6 +1128,38 @@ impl AppModel {
 
             if !paths.is_empty() {
                 sender.input(AppMsg::FilesChosen(paths));
+            }
+        });
+    }
+
+    /// Lets the user pick a picture to use as the icon of the game at `game`.
+    fn open_icon_dialog(&self, sender: &ComponentSender<Self>, game: PathBuf) {
+        let picture_filter = gtk::FileFilter::new();
+        picture_filter.set_name(Some("Pictures"));
+        for suffix in ["png", "jpg", "jpeg"] {
+            picture_filter.add_suffix(suffix);
+        }
+
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&picture_filter);
+
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose a game icon")
+            .accept_label("Use as icon")
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&picture_filter)
+            .build();
+
+        let window = self.window.clone();
+        let sender = sender.clone();
+        relm4::spawn_local(async move {
+            let Ok(file) = dialog.open_future(Some(&window)).await else {
+                return;
+            };
+
+            if let Some(picture) = file.path() {
+                sender.input(AppMsg::IconChosen(game, picture));
             }
         });
     }

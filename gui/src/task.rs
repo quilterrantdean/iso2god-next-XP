@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use iso2god_next::{CancelToken, ConvertOptions, IsoInfo, TrimMode};
+use iso2god_next::{CancelToken, ConvertOptions, IsoInfo, TrimMode, icon};
 use relm4::ComponentSender;
 
 use crate::app::{AppModel, AppMsg};
@@ -16,6 +16,16 @@ use crate::settings::FtpSettings;
 pub struct Job {
     pub path: PathBuf,
     pub info: IsoInfo,
+    pub icon: Option<Vec<u8>>,
+}
+
+/// Which of an entry's two icons a worker thread was preparing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconKind {
+    /// Found for the game: its own, or else downloaded from Xbox Live.
+    Game,
+    /// A picture the user chose.
+    Custom,
 }
 
 /// How a single ISO conversion ended.
@@ -35,6 +45,28 @@ pub fn inspect(sender: ComponentSender<AppModel>, paths: Vec<PathBuf>) {
                 .map_err(|error| describe(&error));
             sender.input(AppMsg::Inspected(path, result));
         }
+    });
+}
+
+/// Looks for the icon of a game: the one in the game itself, and if that cannot
+/// be read and `download` is set, the one on Xbox Live. The result is `Ok(None)`
+/// when there is none.
+pub fn find_icon(sender: ComponentSender<AppModel>, path: PathBuf, title_id: u32, download: bool) {
+    std::thread::spawn(move || {
+        let result = icon::find(&path, title_id, download)
+            .map(|found| found.map(|(png, _origin)| png))
+            .map_err(|error| describe(&error));
+        sender.input(AppMsg::IconLoaded(path, IconKind::Game, result));
+    });
+}
+
+/// Turns a picture the user chose into a game icon.
+pub fn load_icon(sender: ComponentSender<AppModel>, path: PathBuf, picture: PathBuf) {
+    std::thread::spawn(move || {
+        let result = icon::from_file(&picture)
+            .map(Some)
+            .map_err(|error| describe(&error));
+        sender.input(AppMsg::IconLoaded(path, IconKind::Custom, result));
     });
 }
 
@@ -59,6 +91,7 @@ pub fn convert_all(
                 source: job.path.clone(),
                 dest_dir: dest_dir.clone(),
                 game_title: None,
+                icon: job.icon.clone(),
                 trim: TrimMode::FromEnd,
                 num_threads,
             };

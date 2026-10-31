@@ -15,13 +15,18 @@ resolver = "3"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+aes = "0.8.4"
 anyhow = { version = "1.0.97", features = ["backtrace"] }
 bitflags = "2.9.0"
 byteorder = "1.5.0"
+cbc = "0.1.2"
 clap = { version = "4.5.32", features = ["derive"] }
+image = { version = "0.25.6", default-features = false, features = ["jpeg", "png"] }
 num_enum = "0.7.3"
 rayon = "1.10.0"
 sha1 = "0.10.6"
+# Plain HTTP only: the icon server's TLS certificate does not match its host name.
+ureq = { version = "2.12.1", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.12.15", features = ["blocking", "json"] }

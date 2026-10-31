@@ -16,10 +16,14 @@ use serde::{Deserialize, Serialize};
 /// uses for installed games.
 pub const DEFAULT_REMOTE_DIR: &str = r"Hdd1:\Content\0000000000000000";
 
-/// Where each converted package is uploaded.
+/// Where each converted package is uploaded, plus whether game icons are
+/// downloaded (the only other setting, so it shares the file).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FtpSettings {
+    /// Download a game's icon from Xbox Live when it cannot be read from the
+    /// game itself.
+    pub fetch_icons: bool,
     /// Upload converted games after each conversion.
     pub enabled: bool,
     /// Address of the console, optionally with a port (`192.168.1.23:21`).
@@ -33,6 +37,7 @@ pub struct FtpSettings {
 impl Default for FtpSettings {
     fn default() -> Self {
         FtpSettings {
+            fetch_icons: true,
             enabled: false,
             host: String::new(),
             username: "xboxftp".to_owned(),
@@ -151,6 +156,8 @@ mod tests {
             serde_json::from_str(r#"{"enabled":true,"host":"192.168.1.23"}"#).unwrap();
 
         assert!(settings.enabled);
+        // Settings saved before icons existed keep fetching them.
+        assert!(settings.fetch_icons);
         assert_eq!(settings.username, "xboxftp");
         assert_eq!(settings.password, "xboxftp");
         assert_eq!(settings.remote_dir(), DEFAULT_REMOTE_DIR);

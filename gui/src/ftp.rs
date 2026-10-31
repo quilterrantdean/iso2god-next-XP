@@ -1312,6 +1312,7 @@ mod tests {
             username: "xboxftp".to_owned(),
             password: "xboxftp".to_owned(),
             remote_dir: crate::settings::DEFAULT_REMOTE_DIR.to_owned(),
+            ..FtpSettings::default()
         };
 
         let message = test_connection(&settings).unwrap();
@@ -1369,6 +1370,7 @@ mod tests {
             username: "xboxftp".to_owned(),
             password: "xboxftp".to_owned(),
             remote_dir: crate::settings::DEFAULT_REMOTE_DIR.to_owned(),
+            ..FtpSettings::default()
         }
     }
 
@@ -1471,6 +1473,7 @@ mod tests {
             username: "xboxftp".to_owned(),
             password: "xboxftp".to_owned(),
             remote_dir: crate::settings::DEFAULT_REMOTE_DIR.to_owned(),
+            ..FtpSettings::default()
         };
 
         let started = Instant::now();
@@ -1627,6 +1630,7 @@ mod tests {
             username: "xboxftp".to_owned(),
             password: "xboxftp".to_owned(),
             remote_dir: crate::settings::DEFAULT_REMOTE_DIR.to_owned(),
+            ..FtpSettings::default()
         };
         let relative = Path::new("ABCD1234").join("00007000");
         let remote_dir = remote_path(crate::settings::DEFAULT_REMOTE_DIR, &relative);

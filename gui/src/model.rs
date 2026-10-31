@@ -30,6 +30,14 @@ pub struct IsoEntry {
     pub path: PathBuf,
     pub info: Option<IsoInfo>,
     pub state: EntryState,
+    /// The game's own icon, or failing that the one from Xbox Live.
+    pub game_icon: Option<Vec<u8>>,
+    /// A picture the user chose; it wins over the downloaded icon.
+    pub custom_icon: Option<Vec<u8>>,
+    /// Icons being downloaded or prepared on worker threads.
+    pub icons_loading: u32,
+    /// Bumped whenever the icon to show changes, so rows redraw only then.
+    pub icon_revision: u32,
 }
 
 impl IsoEntry {
@@ -38,7 +46,16 @@ impl IsoEntry {
             path,
             info: None,
             state: EntryState::Inspecting,
+            game_icon: None,
+            custom_icon: None,
+            icons_loading: 0,
+            icon_revision: 0,
         }
+    }
+
+    /// The PNG to put in the package: the user's choice, else the game's.
+    pub fn icon(&self) -> Option<&[u8]> {
+        self.custom_icon.as_deref().or(self.game_icon.as_deref())
     }
 
     pub fn file_name(&self) -> String {
