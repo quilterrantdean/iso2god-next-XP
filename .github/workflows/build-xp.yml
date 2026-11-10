@@ -1,63 +1,69 @@
 name: Build Windows XP 32-bit
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch:
 
 jobs:
   build-xp-x86:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout iso2god-next
         uses: actions/checkout@v4
         with:
           repository: georgewoodall82/iso2god-next
           submodules: recursive
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Install Windows XP Toolset (v141_xp) & .NET 4.0/3.5 Targeting
+      - name: Verify Rust project
         shell: pwsh
         run: |
-          $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
-          $installPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          if (Test-Path $vsInstaller) {
-            Start-Process -FilePath $vsInstaller -ArgumentList "modify --installPath `"$installPath`" --add Microsoft.VisualStudio.Component.WinXP --add Microsoft.Net.Component.4.TargetingPack --add Microsoft.Net.Component.3.5.DeveloperTools --quiet --norestart" -Wait
-          }
+          if (-not (Test-Path Cargo.toml)) { throw "Cargo.toml not found - repo is not a Rust project" }
 
-      - name: Compile for Windows XP (x86 / Subsystem 5.01)
+      - name: Install Rust (stable, i686 MSVC)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\output"
+          rustup toolchain install stable --profile minimal --target i686-pc-windows-msvc
+          rustup default stable
+          rustc -Vv
 
-          # 1. C# / C++ Solution (.sln)
-          if (Get-ChildItem -Filter "*.sln" -Recurse) {
-            $sln = (Get-ChildItem -Filter "*.sln" -Recurse | Select-Object -First 1).FullName
-            msbuild $sln /p:Configuration=Release /p:Platform="x86" /p:PlatformToolset=v141_xp /p:TargetFrameworkVersion=v4.0 /p:SubSystemVersion=5.01 /m
-            Get-ChildItem -Path . -Include *.exe,*.dll -Recurse | Where-Object { $_.FullName -match "Release|x86|bin" } | Copy-Item -Destination "$env:GITHUB_WORKSPACE\output" -Force
-          }
-          
-          # 2. Rust (Cargo.toml) - Rust 1.75 is the last version supporting Windows XP
-          elseif (Test-Path "Cargo.toml") {
-            rustup toolchain install 1.75.0-i686-pc-windows-msvc
-            rustup default 1.75.0-i686-pc-windows-msvc
-            $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/SUBSYSTEM:CONSOLE,5.01"
-            cargo build --release --target i686-pc-windows-msvc
-            Copy-Item "target\i686-pc-windows-msvc\release\*.exe" -Destination "$env:GITHUB_WORKSPACE\output" -Force
-          }
-          
-          # 3. CMake (CMakeLists.txt)
-          elseif (Test-Path "CMakeLists.txt") {
-            cmake -B build -G "Visual Studio 17 2022" -A Win32 -T v141_xp -DCMAKE_CXX_FLAGS="/D_USING_V110_SDK71_" -DCMAKE_EXE_LINKER_FLAGS="/SUBSYSTEM:WINDOWS,5.01"
-            cmake --build build --config Release
-            Get-ChildItem -Path "build" -Include *.exe,*.dll -Recurse | Copy-Item -Destination "$env:GITHUB_WORKSPACE\output" -Force
+      - name: Download YY-Thunks (XP API shims)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo Chuyu-Team/YY-Thunks --pattern "YY-Thunks-Objs.zip" --dir yy
+          Expand-Archive yy\YY-Thunks-Objs.zip -DestinationPath yy\objs -Force
+          $obj = Get-ChildItem yy\objs -Recurse -Filter "YY_Thunks_for_WinXP.obj" |
+                 Where-Object { $_.FullName -match "x86" } | Select-Object -First 1
+          if (-not $obj) { throw "YY_Thunks_for_WinXP.obj (x86) not found" }
+          "YY_OBJ=$($obj.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Build (i686, static CRT, subsystem 5.01)
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/SUBSYSTEM:CONSOLE,5.01 -C link-arg=$env:YY_OBJ"
+          cargo build --release --target i686-pc-windows-msvc
+
+      - name: Verify PE header
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+                     Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
+          Get-ChildItem target\i686-pc-windows-msvc\release\*.exe | ForEach-Object {
+            & $dumpbin.FullName /headers $_.FullName | Select-String "machine|subsystem version|operating system version"
           }
 
-      - name: Upload Compiled Binaries
+      - name: Collect binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force output | Out-Null
+          Copy-Item target\i686-pc-windows-msvc\release\*.exe output\
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: iso2god-next-winxp-x86
-          path: ${{ github.workspace }}\output\*
+          path: output/*.exe
