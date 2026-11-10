@@ -1,0 +1,63 @@
+name: Build Windows XP (32-bit)
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compilar para Windows XP (x86)
+    runs-on: windows-latest
+
+    steps:
+      - name: Obter código do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar ferramenta Rust (canal estável)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Descarregar e extrair YY-Thunks
+        shell: pwsh
+        run: |
+          $yyVersion = "1.1.4"
+          $yyUrl = "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v$yyVersion/YY-Thunks-$yyVersion-Binary.zip"
+          $zipPath = "$env:TEMP\YY-Thunks.zip"
+          $extractPath = "$env:GITHUB_WORKSPACE\yy-thunks"
+
+          Write-Host "A descarregar YY-Thunks v$yyVersion..."
+          Invoke-WebRequest -Uri $yyUrl -OutFile $zipPath
+
+          Write-Host "A extrair ficheiros..."
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+          $objPath = "$extractPath\objs\x86\YY_Thunks_for_WinXP.obj"
+          if (-not (Test-Path $objPath)) {
+              Write-Error "Ficheiro YY_Thunks_for_WinXP.obj não foi encontrado em: $objPath"
+              exit 1
+          }
+
+      - name: Compilar iso2god-next (CLI)
+        shell: pwsh
+        run: |
+          $objPath = "$env:GITHUB_WORKSPACE\yy-thunks\objs\x86\YY_Thunks_for_WinXP.obj"
+
+          # Configuração dos argumentos do linker:
+          # - crt-static: incorpora a runtime C no próprio executável
+          # - /subsystem:console,5.01: define a compatibilidade mínima para Windows XP (NT 5.1)
+          # - link-arg=$objPath: injecta o ficheiro objecto do YY-Thunks para resolver APIs Win32 em falta
+          $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/subsystem:console,5.01 -C link-arg=$objPath"
+
+          # Compilação apenas do pacote CLI
+          cargo build --release --target i686-pc-windows-msvc --bin iso2god-next
+
+      - name: Publicar artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso2god-next-windows-xp-32bit
+          path: target/i686-pc-windows-msvc/release/iso2god-next.exe
+          if-no-files-found: error
